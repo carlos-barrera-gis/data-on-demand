@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GIS Data on Demand</title>
+<meta name="description" content="Self-service GIS data for El Paso County, Colorado: draw an area, choose parcels, zoning or contours, and download a ready-to-use data package.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* Layout: same operations look as EPC Live Conditions. Map on the left with a draw tool,
+   a step-by-step request panel on the right (area, data, format, package, API log). */
+:root{
+  color-scheme: dark;
+  --navy:#0f1b2d; --panel:#132238; --panel2:#182a44; --line:#2a3d5a;
+  --ivory:#f3eee3; --muted:#9fb0c6; --cyan:#3fc1c9; --gold:#d4a43a;
+  --ok:#4fbf7f; --warn:#e0a33a; --bad:#e8604c;
+  --f-display:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --f-body:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--navy);color:var(--ivory);font:14px/1.45 var(--f-body)}
+a{color:var(--cyan)}
+.app{display:grid;grid-template-columns:minmax(0,1fr) 440px;grid-template-rows:auto minmax(0,1fr);height:100%}
+header{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px 24px;align-items:center;justify-content:space-between;padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:#0b1524}
+header h1{font:700 22px/1.1 var(--f-display);letter-spacing:.02em;margin:0}
+header .eyebrow{font:500 11px var(--f-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--gold)}
+header .sub{font-size:13px;color:var(--muted)}
+.mapwrap{position:relative;min-height:0}
+#map{position:absolute;inset:0;background:#0b1524}
+#map.drawing{cursor:crosshair}
+.maptools{position:absolute;left:56px;top:10px;z-index:500;display:flex;flex-wrap:wrap;gap:8px}
+button{font:600 13px var(--f-body);color:var(--navy);background:var(--cyan);border:0;border-radius:6px;padding:9px 14px;cursor:pointer;min-height:40px}
+button.ghost{background:rgba(11,21,36,.9);color:var(--cyan);border:1px solid var(--cyan)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.hint{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);z-index:500;background:rgba(11,21,36,.92);border:1px solid var(--line);border-radius:8px;padding:8px 14px;font-size:13px;color:var(--ivory);max-width:90%;text-align:center}
+aside{overflow-y:auto;background:var(--panel);border-left:1px solid var(--line);min-width:0}
+section{padding:16px max(16px,env(safe-area-inset-right,0px)) 16px 18px;border-bottom:1px solid var(--line)}
+h2{font:700 14px var(--f-display);letter-spacing:.08em;text-transform:uppercase;margin:0 0 8px;display:flex;gap:10px;align-items:center}
+h2 .n{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);font:600 12px var(--f-mono);color:var(--cyan)}
+.src{font:11px var(--f-mono);color:var(--muted);margin:0 0 10px}
+.opt{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;align-items:start;padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:var(--panel2);cursor:pointer}
+.opt input{margin-top:3px;width:16px;height:16px;accent-color:var(--cyan)}
+.opt b{font-weight:600}
+.opt span.d{grid-column:2;color:var(--muted);font-size:12.5px}
+.opt select{grid-column:2;justify-self:start;margin-top:4px;font:13px var(--f-body);background:var(--navy);color:var(--ivory);border:1px solid var(--line);border-radius:5px;padding:5px 8px}
+.formats{display:flex;flex-wrap:wrap;gap:8px}
+.formats label{display:flex;gap:6px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel2);cursor:pointer;font-size:13px}
+.formats input{accent-color:var(--cyan)}
+.areabox{font:13px var(--f-mono);color:var(--muted);padding:10px;border-radius:6px;background:var(--panel2)}
+.areabox b{color:var(--ivory);font-weight:500}
+.warn{color:var(--warn)}
+.big{width:100%;min-height:48px;font-size:15px}
+.progress{margin-top:10px;display:grid;gap:6px}
+.step{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:6px 10px;border-radius:5px;background:var(--panel2)}
+.step .s{font:500 12px var(--f-mono);white-space:nowrap}
+.step .s.ok{color:var(--ok)}.step .s.run{color:var(--gold)}.step .s.err{color:var(--bad)}
+.receipt{margin-top:12px;padding:14px;border:1.5px solid var(--gold);border-radius:8px;display:grid;gap:8px}
+.receipt .id{font:500 12px var(--f-mono);color:var(--gold)}
+.receipt ul{margin:0;padding-left:18px;color:var(--muted);font-size:13px}
+.log{font:11.5px/1.4 var(--f-mono);display:grid;gap:6px}
+.log .e{padding:8px;background:#0b1524;border:1px solid var(--line);border-radius:6px;display:grid;gap:3px}
+.log .h{display:flex;justify-content:space-between;gap:8px}
+.log .ok{color:var(--ok)}.log .err{color:var(--bad)}
+.log code{color:var(--muted);word-break:break-all}
+footer{padding:14px 18px;font-size:12px;color:var(--muted)}
+.leaflet-container{font-family:var(--f-body)}
+.leaflet-control-attribution{background:rgba(11,21,36,.8)!important;color:var(--muted)!important;font-size:10px}
+.leaflet-control-attribution a{color:var(--cyan)!important}
+.leaflet-bar a{background:var(--panel)!important;color:var(--ivory)!important;border-color:var(--line)!important}
+@media (max-width:900px){
+  .app{grid-template-columns:1fr;grid-template-rows:auto 55vh auto;height:auto}
+  aside{border-left:0;border-top:1px solid var(--line);overflow:visible}
+  .maptools{left:10px;top:auto;bottom:70px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <div class="eyebrow">El Paso County, Colorado · self-service public data</div>
+      <h1>GIS Data on Demand</h1>
+    </div>
+    <div class="sub">Draw an area · choose data · download a ready-to-use package. No account, no waiting.</div>
+  </header>
+
+  <div class="mapwrap">
+    <div id="map" role="application" aria-label="Map for drawing a data request area"></div>
+    <div class="maptools">
+      <button id="drawBtn" type="button">Draw area</button>
+      <button id="viewBtn" class="ghost" type="button">Use current view</button>
+      <button id="clearBtn" class="ghost" type="button">Clear</button>
+    </div>
+    <div class="hint" id="hint">Zoom to your site, then click <b>Draw area</b> and drag a box on the map.</div>
+  </div>
+
+  <aside>
+    <section>
+      <h2><span class="n">1</span>Area of interest</h2>
+      <div class="areabox" id="areaBox">No area yet. Draw a box on the map (up to 1 square mile).</div>
+    </section>
+
+    <section>
+      <h2><span class="n">2</span>Data</h2>
+      <label class="opt"><input type="checkbox" id="dParcels" checked><b>Parcels</b>
+        <span class="d">Parcel boundaries with parcel number, zoning and assessor link. El Paso County GIS.</span></label>
+      <label class="opt"><input type="checkbox" id="dZoning"><b>Zoning</b>
+        <span class="d">Consolidated zoning districts with jurisdiction. El Paso County GIS.</span></label>
+      <label class="opt"><input type="checkbox" id="dContours" checked><b>Contours</b>
+        <span class="d">Generated from USGS 3DEP elevation at the interval you choose. Elevations in feet.</span>
+        <select id="interval" aria-label="Contour interval">
+          <option value="1">1 ft interval</option>
+          <option value="2" selected>2 ft interval</option>
+          <option value="5">5 ft interval</option>
+          <option value="10">10 ft interval</option>
+        </select></label>
+    </section>
+
+    <section>
+      <h2><span class="n">3</span>Format</h2>
+      <div class="formats" role="radiogroup" aria-label="Output format">
+        <label><input type="radio" name="fmt" value="shp" checked>Shapefile</label>
+        <label><input type="radio" name="fmt" value="dxf">CAD (DXF)</label>
+        <label><input type="radio" name="fmt" value="geojson">GeoJSON</label>
+      </div>
+      <p class="src" style="margin-top:10px">Shapefile and GeoJSON: WGS84 (EPSG:4326). DXF: Colorado State Plane Central, US feet (EPSG:2232), contour lines at their elevation for CAD users.</p>
+    </section>
+
+    <section>
+      <h2><span class="n">4</span>Package</h2>
+      <button id="goBtn" class="big" type="button" disabled>Build my data package</button>
+      <div class="progress" id="progress"></div>
+      <div id="receipt"></div>
+    </section>
+
+    <section>
+      <h2>API log</h2>
+      <p class="src">Every request this page made, newest first.</p>
+      <div class="log" id="log"></div>
+    </section>
+
+    <footer>
+      Built by Carlos Barrera. Parcels and zoning: El Paso County public GIS services. Elevation: USGS 3D Elevation Program. Planning-level data, not a survey. Not an official county product.
+    </footer>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
+<script>
+/* ============================================================
+   GIS Data on Demand
+   1. The user draws an area.
+   2. The page queries the county's public FeatureServers for
+      parcels and zoning, and asks USGS 3DEP for elevation.
+   3. Contours are traced from the elevation grid in the browser.
+   4. Everything is written to the chosen format and zipped with
+      a README, ready to download.
+   ============================================================ */
+const EPC = "https://gisservices.elpasoco.com/arcgis2/rest/services/Public";
+const API = {
+  parcels: EPC + "/MailingLabelParcels/FeatureServer/0/query",
+  zoning:  EPC + "/ZoningConsolidatedEPC/FeatureServer/0/query",
+  elev:    "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage"
+};
+const MAX_SQMI = 1;
+proj4.defs("EPSG:2232", "+proj=lcc +lat_0=37.8333333333333 +lon_0=-105.5 +lat_1=39.75 +lat_2=38.45 +x_0=914401.828803658 +y_0=304800.609601219 +datum=NAD83 +units=us-ft +no_defs");
+const toSP = (lon, lat) => proj4("EPSG:4326", "EPSG:2232", [lon, lat]);
+
+// ---------- logged fetch ----------
+async function apiGet(label, url, params, as = "json") {
+  const full = url + "?" + new URLSearchParams(params).toString();
+  const t0 = performance.now();
+  try {
+    const res = await fetch(full);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = as === "json" ? await res.json() : await res.arrayBuffer();
+    if (data && data.error) throw new Error(data.error.message || "Service error");
+    const info = as === "json" && data && Array.isArray(data.features) ? data.features.length + " features" : as === "json" ? "" : (data.byteLength / 1024).toFixed(0) + " KB";
+    logCall(label, full, true, Math.round(performance.now() - t0), info);
+    return data;
+  } catch (e) { logCall(label, full, false, Math.round(performance.now() - t0), e.message); throw e; }
+}
+function logCall(label, url, ok, ms, info) {
+  const e = document.createElement("div"); e.className = "e";
+  const h = document.createElement("div"); h.className = "h";
+  const l = document.createElement("span"); l.textContent = label;
+  const s = document.createElement("span"); s.className = ok ? "ok" : "err"; s.textContent = (ok ? "200 OK" : "FAILED") + " · " + ms + " ms" + (info ? " · " + info : "");
+  const c = document.createElement("code"); c.textContent = url.length > 400 ? url.slice(0, 400) + "…" : url;
+  h.append(l, s); e.append(h, c); document.getElementById("log").prepend(e);
+}
+
+// ---------- map and drawing ----------
+const map = L.map("map").setView([38.8339, -104.8214], 15);
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, attribution: "Imagery: Esri, Maxar, Earthstar Geographics" }).addTo(map);
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19 }).addTo(map);
+const results = L.layerGroup().addTo(map);
+let aoi = null, aoiRect = null, drawing = false, startLL = null;
+
+function setAOI(bounds) {
+  aoi = bounds;
+  if (aoiRect) map.removeLayer(aoiRect);
+  aoiRect = L.rectangle(bounds, { color: "#d4a43a", weight: 2, fillOpacity: 0.06, dashArray: "6 4" }).addTo(map);
+  const sq = areaSqMi(bounds), ac = sq * 640;
+  const box = document.getElementById("areaBox");
+  box.innerHTML = `Area: <b>${ac < 100 ? ac.toFixed(1) + " acres" : sq.toFixed(2) + " sq mi"}</b><br>` +
+    `Bounds: ${bounds.getSouth().toFixed(5)}, ${bounds.getWest().toFixed(5)} to ${bounds.getNorth().toFixed(5)}, ${bounds.getEast().toFixed(5)}` +
+    (sq > MAX_SQMI ? `<br><span class="warn">Too large: keep it under ${MAX_SQMI} sq mi.</span>` : "");
+  document.getElementById("goBtn").disabled = sq > MAX_SQMI;
+  document.getElementById("hint").textContent = sq > MAX_SQMI ? "Area is too large. Draw a smaller box." : "Area set. Choose data and format, then build your package.";
+}
+function areaSqMi(b) {
+  const lat = (b.getNorth() + b.getSouth()) / 2, mPerDeg = 111320;
+  const w = (b.getEast() - b.getWest()) * mPerDeg * Math.cos(lat * Math.PI / 180), h = (b.getNorth() - b.getSouth()) * mPerDeg;
+  return (w * h) / 2589988.11;
+}
+document.getElementById("drawBtn").addEventListener("click", () => {
+  drawing = !drawing; map.dragging[drawing ? "disable" : "enable"]();
+  document.getElementById("map").classList.toggle("drawing", drawing);
+  document.getElementById("drawBtn").textContent = drawing ? "Cancel drawing" : "Draw area";
+  document.getElementById("hint").textContent = drawing ? "Drag a box on the map." : "Zoom to your site, then click Draw area and drag a box on the map.";
+});
+map.on("mousedown", e => { if (!drawing) return; startLL = e.latlng; });
+map.on("mousemove", e => { if (!drawing || !startLL) return; const b = L.latLngBounds(startLL, e.latlng); if (aoiRect) aoiRect.setBounds(b); else aoiRect = L.rectangle(b, { color: "#d4a43a", weight: 2, fillOpacity: 0.06, dashArray: "6 4" }).addTo(map); });
+map.on("mouseup", e => { if (!drawing || !startLL) return; const b = L.latLngBounds(startLL, e.latlng); startLL = null; drawing = false; map.dragging.enable(); document.getElementById("map").classList.remove("drawing"); document.getElementById("drawBtn").textContent = "Draw area"; if (b.getNorth() - b.getSouth() > 1e-5) setAOI(b); });
+document.getElementById("viewBtn").addEventListener("click", () => setAOI(map.getBounds().pad(-0.1)));
+document.getElementById("clearBtn").addEventListener("click", () => { aoi = null; if (aoiRect) map.removeLayer(aoiRect); aoiRect = null; results.clearLayers(); document.getElementById("goBtn").disabled = true; document.getElementById("areaBox").textContent = "No area yet. Draw a box on the map (up to 1 square mile)."; document.getElementById("receipt").innerHTML = ""; document.getElementById("progress").innerHTML = ""; });
+
+// ---------- data steps ----------
+function envParams(b) {
+  return { geometry: JSON.stringify({ xmin: b.getWest(), ymin: b.getSouth(), xmax: b.getEast(), ymax: b.getNorth(), spatialReference: { wkid: 4326 } }),
+    geometryType: "esriGeometryEnvelope", inSR: 4326, spatialRel: "esriSpatialRelIntersects", outSR: 4326, returnGeometry: true, resultRecordCount: 2000, f: "geojson" };
+}
+async function getParcels(b) {
+  const d = await apiGet("Parcels · EPC FeatureServer", API.parcels, { ...envParams(b), outFields: "PARCEL,ZONING,ZONETYPE,TRACT,LOTNO,BLOCKNO,hyperlink" });
+  d.features.forEach(f => { const p = f.properties; f.properties = { PARCEL: p.PARCEL, ZONING: p.ZONING, ZONETYPE: p.ZONETYPE, TRACT: p.TRACT, LOT: p.LOTNO, BLOCK: p.BLOCKNO, ASSESSOR: p.hyperlink }; });
+  return d;
+}
+async function getZoning(b) {
+  const d = await apiGet("Zoning · EPC FeatureServer", API.zoning, { ...envParams(b), outFields: "ZoneCategory,Zoning_Orig,ZoningOrig_Desc,Jurisdiction,SourceDate" });
+  d.features.forEach(f => { const p = f.properties; f.properties = { CATEGORY: p.ZoneCategory, ZONE: p.Zoning_Orig, DESCRIPT: p.ZoningOrig_Desc, JURISDICT: p.Jurisdiction }; });
+  return d;
+}
+async function getContours(b, intervalFt) {
+  // grid size: ~1.5 m cells, capped at 800 px on the long side
+  const lat = (b.getNorth() + b.getSouth()) / 2;
+  const wM = (b.getEast() - b.getWest()) * 111320 * Math.cos(lat * Math.PI / 180), hM = (b.getNorth() - b.getSouth()) * 111320;
+  const cell = Math.max(1.5, Math.max(wM, hM) / 800);
+  const W = Math.max(20, Math.round(wM / cell)), H = Math.max(20, Math.round(hM / cell));
+  const meta = await apiGet("Elevation · USGS 3DEP exportImage", API.elev, {
+    bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","), bboxSR: 4326, imageSR: 4326, size: W + "," + H,
+    format: "tiff", pixelType: "F32", noData: -9999, interpolation: "RSP_BilinearInterpolation", f: "json" });
+  const buf = await apiGet("Elevation raster · USGS 3DEP", meta.href, {}, "buffer");
+  const tiff = await GeoTIFF.fromArrayBuffer(buf), img = await tiff.getImage();
+  const [ras] = await img.readRasters(); const w = img.getWidth(), h = img.getHeight();
+  const vals = new Float64Array(w * h); let mn = Infinity, mx = -Infinity;
+  for (let i = 0; i < vals.length; i++) { const v = ras[i]; if (v <= -9000 || !isFinite(v)) { vals[i] = NaN; continue; } const ft = v * 3.28084; vals[i] = ft; if (ft < mn) mn = ft; if (ft > mx) mx = ft; }
+  for (let i = 0; i < vals.length; i++) if (isNaN(vals[i])) vals[i] = mn;   // fill gaps
+  const levels = d3.range(Math.ceil(mn / intervalFt) * intervalFt, mx + 1e-9, intervalFt);
+  const ex = meta.extent || { xmin: b.getWest(), xmax: b.getEast(), ymin: b.getSouth(), ymax: b.getNorth() };
+  const X = x => ex.xmin + (x / w) * (ex.xmax - ex.xmin), Y = y => ex.ymax - (y / h) * (ex.ymax - ex.ymin);
+  const onEdge = ([x, y]) => x <= 0 || y <= 0 || x >= w || y >= h;
+  const feats = [];
+  d3.contours().size([w, h]).thresholds(levels)(vals).forEach(c => {
+    const elev = Math.round(c.value * 100) / 100;
+    const index = Math.abs(elev % (intervalFt * 5)) < 1e-6;
+    c.coordinates.forEach(poly => poly.forEach(ring => {
+      // a filled band's outline includes the raster edge; keep only the true contour pieces
+      let cur = [];
+      for (let i = 0; i < ring.length; i++) {
+        const p = ring[i], q = ring[i + 1];
+        if (q && onEdge(p) && onEdge(q)) { if (cur.length > 1) push(cur); cur = []; continue; }
+        cur.push([X(p[0]), Y(p[1])]);
+      }
+      if (cur.length > 1) push(cur);
+    }));
+    function push(coords) { feats.push({ type: "Feature", properties: { ELEVATION: elev, TYPE: index ? "INDEX" : "INTERMED" }, geometry: { type: "LineString", coordinates: coords } }); }
+  });
+  return { type: "FeatureCollection", features: feats, stats: { min: mn, max: mx, w, h, cell } };
+}
+
+// ---------- writers ----------
+function csvEscape(v) { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+const PRJ_4326 = 'GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]';
+
+// Minimal ESRI Shapefile writer (polyline / polygon) with DBF attributes
+function writeShapefile(fc, kind) {
+  const recs = [];
+  fc.features.forEach(f => {
+    const g = f.geometry; if (!g) return;
+    let parts = [];
+    if (g.type === "LineString") parts = [g.coordinates];
+    else if (g.type === "MultiLineString") parts = g.coordinates;
+    else if (g.type === "Polygon") parts = g.coordinates.map((r, i) => orient(r, i === 0));
+    else if (g.type === "MultiPolygon") parts = g.coordinates.flatMap(poly => poly.map((r, i) => orient(r, i === 0)));
+    recs.push({ parts, props: f.properties });
+  });
+  const type = kind;   // 3 polyline, 5 polygon
+  const bbox = [Infinity, Infinity, -Infinity, -Infinity];
+  const shpParts = [], shxRecs = [];
+  let offset = 50;     // in 16-bit words, after the 100-byte header
+  recs.forEach((r, i) => {
+    const nParts = r.parts.length, nPts = r.parts.reduce((a, p) => a + p.length, 0);
+    const len = 4 + 32 + 4 + 4 + 4 * nParts + 16 * nPts;           // content bytes
+    const b = new DataView(new ArrayBuffer(8 + len));
+    b.setInt32(0, i + 1, false); b.setInt32(4, len / 2, false);
+    b.setInt32(8, type, true);
+    const rb = [Infinity, Infinity, -Infinity, -Infinity];
+    r.parts.forEach(p => p.forEach(([x, y]) => { rb[0] = Math.min(rb[0], x); rb[1] = Math.min(rb[1], y); rb[2] = Math.max(rb[2], x); rb[3] = Math.max(rb[3], y); }));
+    rb.forEach((v, k) => b.setFloat64(12 + 8 * k, v, true));
+    for (let k = 0; k < 4; k++) bbox[k] = k < 2 ? Math.min(bbox[k], rb[k]) : Math.max(bbox[k], rb[k]);
+    b.setInt32(44, nParts, true); b.setInt32(48, nPts, true);
+    let o = 52, start = 0;
+    r.parts.forEach(p => { b.setInt32(o, start, true); o += 4; start += p.length; });
+    r.parts.forEach(p => p.forEach(([x, y]) => { b.setFloat64(o, x, true); b.setFloat64(o + 8, y, true); o += 16; }));
+    shpParts.push(b.buffer); shxRecs.push([offset, len / 2]); offset += (8 + len) / 2;
+  });
+  const header = (fileLenWords) => { const h = new DataView(new ArrayBuffer(100)); h.setInt32(0, 9994, false); h.setInt32(24, fileLenWords, false); h.setInt32(28, 1000, true); h.setInt32(32, type, true); bbox.forEach((v, k) => h.setFloat64(36 + 8 * k, isFinite(v) ? v : 0, true)); return h.buffer; };
+  const shp = new Blob([header(offset), ...shpParts]);
+  const shx = new DataView(new ArrayBuffer(8 * shxRecs.length)); shxRecs.forEach(([o, l], i) => { shx.setInt32(i * 8, o, false); shx.setInt32(i * 8 + 4, l, false); });
+  const shxBlob = new Blob([header(50 + 4 * shxRecs.length), shx.buffer]);
+  return { shp, shx: shxBlob, dbf: writeDBF(recs.map(r => r.props)), prj: PRJ_4326 };
+}
+function ringArea(r) { let a = 0; for (let i = 0; i < r.length - 1; i++) a += r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1]; return a / 2; }
+function orient(r, outer) { const cw = ringArea(r) < 0; return (outer ? cw : !cw) ? r : r.slice().reverse(); }   // shapefile: outer rings clockwise
+function writeDBF(rows) {
+  const keys = Object.keys(rows[0] || { ID: 1 });
+  const fields = keys.map(k => {
+    const vals = rows.map(r => r[k]);
+    const numeric = vals.every(v => v == null || typeof v === "number");
+    const len = numeric ? 18 : Math.min(254, Math.max(1, ...vals.map(v => (v == null ? "" : String(v)).length)));
+    return { name: k.slice(0, 10), type: numeric ? "N" : "C", len, dec: numeric ? 3 : 0 };
+  });
+  const recLen = 1 + fields.reduce((a, f) => a + f.len, 0), hdrLen = 32 + 32 * fields.length + 1;
+  const buf = new Uint8Array(hdrLen + recLen * rows.length + 1), dv = new DataView(buf.buffer);
+  const d = new Date(); buf[0] = 3; buf[1] = d.getFullYear() - 1900; buf[2] = d.getMonth() + 1; buf[3] = d.getDate();
+  dv.setUint32(4, rows.length, true); dv.setUint16(8, hdrLen, true); dv.setUint16(10, recLen, true);
+  const enc = s => Array.from(s).map(ch => { const c = ch.charCodeAt(0); return c < 128 ? c : 63; });
+  fields.forEach((f, i) => { const o = 32 + 32 * i; enc(f.name).forEach((c, j) => buf[o + j] = c); buf[o + 11] = f.type.charCodeAt(0); buf[o + 16] = f.len; buf[o + 17] = f.dec; });
+  buf[hdrLen - 1] = 0x0d;
+  rows.forEach((r, ri) => {
+    let o = hdrLen + ri * recLen; buf[o++] = 0x20;
+    fields.forEach((f, i) => {
+      const v = r[keys[i]]; let s = v == null ? "" : f.type === "N" ? Number(v).toFixed(f.dec) : String(v);
+      s = f.type === "N" ? s.padStart(f.len).slice(-f.len) : s.padEnd(f.len).slice(0, f.len);
+      enc(s).forEach((c, j) => buf[o + j] = c); o += f.len;
+    });
+  });
+  buf[buf.length - 1] = 0x1a;
+  return new Blob([buf]);
+}
+// Minimal DXF (R12) writer: each feature as a POLYLINE on its own layer, in State Plane feet
+function writeDXF(layers) {
+  const out = ["0", "SECTION", "2", "HEADER", "9", "$INSUNITS", "70", "2", "0", "ENDSEC", "0", "SECTION", "2", "TABLES", "0", "TABLE", "2", "LAYER", "70", String(layers.length)];
+  const colors = { PARCELS: 2, ZONING: 6, CONTOUR_INDEX: 1, CONTOUR_INTERMED: 8 };
+  const names = new Set(); layers.forEach(l => l.items.forEach(it => names.add(it.layer)));
+  names.forEach(n => out.push("0", "LAYER", "2", n, "70", "0", "62", String(colors[n] || 7), "6", "CONTINUOUS"));
+  out.push("0", "ENDTAB", "0", "ENDSEC", "0", "SECTION", "2", "ENTITIES");
+  layers.forEach(l => l.items.forEach(it => {
+    out.push("0", "POLYLINE", "8", it.layer, "66", "1", "70", it.closed ? "1" : "0", "30", (it.z || 0).toFixed(2));
+    it.pts.forEach(([x, y]) => out.push("0", "VERTEX", "8", it.layer, "10", x.toFixed(3), "20", y.toFixed(3), "30", (it.z || 0).toFixed(2)));
+    out.push("0", "SEQEND", "8", it.layer);
+  }));
+  out.push("0", "ENDSEC", "0", "EOF");
+  return out.join("\r\n");
+}
+function dxfItems(fc, layerFn, zFn, closed) {
+  const items = [];
+  fc.features.forEach(f => {
+    const g = f.geometry; if (!g) return;
+    const rings = g.type === "LineString" ? [g.coordinates] : g.type === "MultiLineString" ? g.coordinates : g.type === "Polygon" ? g.coordinates : g.type === "MultiPolygon" ? g.coordinates.flat() : [];
+    rings.forEach(r => items.push({ layer: layerFn(f), z: zFn(f), closed, pts: r.map(([x, y]) => toSP(x, y)) }));
+  });
+  return { items };
+}
+
+// ---------- the request ----------
+function stepRow(label) {
+  const d = document.createElement("div"); d.className = "step";
+  d.innerHTML = `<span></span><span class="s run">running…</span>`; d.firstChild.textContent = label;
+  document.getElementById("progress").append(d);
+  return (state, text) => { const s = d.lastChild; s.className = "s " + state; s.textContent = text; };
+}
+document.getElementById("goBtn").addEventListener("click", async () => {
+  if (!aoi) return;
+  const go = document.getElementById("goBtn"); go.disabled = true; go.textContent = "Building…";
+  document.getElementById("progress").innerHTML = ""; document.getElementById("receipt").innerHTML = ""; results.clearLayers();
+  const $ = id => document.getElementById(id);
+  const want = { parcels: $("dParcels").checked, zoning: $("dZoning").checked, contours: $("dContours").checked };
+  const interval = Number(document.getElementById("interval").value);
+  const fmt = document.querySelector("input[name=fmt]:checked").value;
+  const reqId = "DOD-" + new Date().toISOString().slice(0, 10).replace(/-/g, "") + "-" + Math.random().toString(36).slice(2, 6).toUpperCase();
+  const t0 = performance.now(), data = {};
+  try {
+    if (want.parcels) { const s = stepRow("Parcels"); data.parcels = await getParcels(aoi); s("ok", data.parcels.features.length + " parcels"); }
+    if (want.zoning) { const s = stepRow("Zoning"); data.zoning = await getZoning(aoi); s("ok", data.zoning.features.length + " districts"); }
+    if (want.contours) { const s = stepRow(`Contours (${interval} ft)`); data.contours = await getContours(aoi, interval); s("ok", data.contours.features.length + " lines"); }
+  } catch (e) {
+    const s = stepRow("Request stopped"); s("err", e.message.slice(0, 60));
+    go.disabled = false; go.textContent = "Build my data package"; return;
+  }
+  // show results
+  if (data.zoning) L.geoJSON(data.zoning, { style: { color: "#c084fc", weight: 1.5, fillOpacity: 0.08 } }).addTo(results);
+  if (data.parcels) L.geoJSON(data.parcels, { style: { color: "#d4a43a", weight: 1.2, fillOpacity: 0.04 } }).addTo(results);
+  if (data.contours) L.geoJSON(data.contours, { style: f => ({ color: "#3fc1c9", weight: f.properties.TYPE === "INDEX" ? 2 : 0.8, opacity: 0.9 }) }).addTo(results);
+
+  // package
+  const s = stepRow("Package (" + fmt.toUpperCase() + ")");
+  const zip = new JSZip(), base = "EPC_" + reqId;
+  const files = [];
+  const add = (name, content) => { zip.file(name, content); files.push(name); };
+  if (fmt === "geojson") Object.entries(data).forEach(([k, fc]) => add(`${k}.geojson`, JSON.stringify({ type: "FeatureCollection", features: fc.features })));
+  if (fmt === "shp") Object.entries(data).forEach(([k, fc]) => { if (!fc.features.length) return; const r = writeShapefile(fc, k === "contours" ? 3 : 5); add(`${k}.shp`, r.shp); add(`${k}.shx`, r.shx); add(`${k}.dbf`, r.dbf); add(`${k}.prj`, r.prj); });
+  if (fmt === "dxf") {
+    const ls = [];
+    if (data.parcels) ls.push(dxfItems(data.parcels, () => "PARCELS", () => 0, true));
+    if (data.zoning) ls.push(dxfItems(data.zoning, () => "ZONING", () => 0, true));
+    if (data.contours) ls.push(dxfItems(data.contours, f => "CONTOUR_" + f.properties.TYPE, f => f.properties.ELEVATION, false));
+    add(`${base}.dxf`, writeDXF(ls));
+  }
+  if (data.parcels && data.parcels.features.length) add("parcels.csv", ["PARCEL,ZONING,ZONETYPE,TRACT,LOT,BLOCK,ASSESSOR"].concat(data.parcels.features.map(f => { const p = f.properties; return [p.PARCEL, p.ZONING, p.ZONETYPE, p.TRACT, p.LOT, p.BLOCK, p.ASSESSOR].map(csvEscape).join(","); })).join("\n"));
+  const sq = areaSqMi(aoi);
+  add("README.txt", [
+    "GIS Data on Demand - El Paso County, Colorado", "Request: " + reqId, "Created: " + new Date().toLocaleString(), "",
+    "Area of interest (WGS84): " + [aoi.getWest(), aoi.getSouth(), aoi.getEast(), aoi.getNorth()].map(v => v.toFixed(6)).join(", "),
+    "Area: " + (sq * 640).toFixed(2) + " acres", "",
+    "Contents:", ...files.map(f => "  " + f), "",
+    "Sources:",
+    data.parcels ? "  Parcels: El Paso County public GIS service (MailingLabelParcels). Owner names are not included." : null,
+    data.zoning ? "  Zoning: El Paso County public GIS service (ZoningConsolidatedEPC)." : null,
+    data.contours ? `  Contours: generated from USGS 3D Elevation Program data, ${interval} ft interval, ~${data.contours.stats.cell.toFixed(1)} m grid. Elevation in feet (NAVD88). Index contours every ${interval * 5} ft.` : null,
+    "", "Coordinate systems:",
+    fmt === "dxf" ? "  DXF: NAD83 Colorado State Plane Central, US survey feet (EPSG:2232). Contour polylines sit at their elevation." : "  WGS84 geographic (EPSG:4326).",
+    "", "Planning-level data only. Not a survey, not for engineering design. Verify with official county records.",
+    "Built by Carlos Barrera - https://carlos-barrera-gis.github.io/data-on-demand/"
+  ].filter(x => x !== null).join("\r\n"));
+  const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+  s("ok", (blob.size / 1024).toFixed(0) + " KB");
+  const secs = ((performance.now() - t0) / 1000).toFixed(1);
+  const url = URL.createObjectURL(blob);
+  const rc = document.getElementById("receipt");
+  rc.innerHTML = `<div class="receipt"><div class="id">REQUEST ${reqId} · READY IN ${secs} S</div>
+    <div>Your data package is ready.</div><ul></ul>
+    <a class="dl" href="${url}" download="${base}.zip" style="display:flex;align-items:center;justify-content:center;min-height:48px;border-radius:6px;background:#3fc1c9;color:#0f1b2d;font-weight:600;text-decoration:none">Download ${base}.zip</a></div>`;
+  const ul = rc.querySelector("ul");
+  files.forEach(f => { const li = document.createElement("li"); li.textContent = f; ul.append(li); });
+  go.disabled = false; go.textContent = "Build my data package";
+  window.__lastPackage = { reqId, files, size: blob.size, secs, counts: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, v.features.length])) };
+});
+</script>
+</body>
+</html>
